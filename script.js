@@ -1,5 +1,5 @@
 // Constantes de configuración
-const API_BASE_URL = infomedica.vercel.app; // Usa la URL actual para Vercel
+const API_BASE_URL = window.location.origin; // Usa la URL actual para Vercel
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000; // 1 segundo
 
