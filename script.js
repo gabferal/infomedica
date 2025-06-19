@@ -48,29 +48,47 @@ async function loginUser(email, password) {
     }
 }
 
-async function registerUser(name, email, password, studentId) {
-    try {
-        const response = await fetch('/api/register', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ name, email, password, studentId })
-        });
-        
-        const data = await response.json();
-        
-        if (!response.ok) {
-            throw new Error(data.error || 'Error al registrarse');
-        }
-        
-        return data;
-    } catch (error) {
-        console.error('Register error:', error);
-        throw error;
+async function registerUser(userData) {
+  try {
+    const response = await fetch('http://localhost:3000/api/register', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(userData),
+    });
+
+    // Manejo mejorado de respuestas
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.message || 'Error en el registro');
     }
+
+    return await response.json();
+  } catch (error) {
+    console.error('Error en registerUser:', error);
+    throw error;
+  }
 }
 
+// Uso en el formulario
+document.querySelector('form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  
+  const userData = {
+    email: e.target.email.value,
+    password: e.target.password.value
+  };
+
+  try {
+    const result = await registerUser(userData);
+    console.log('Registro exitoso:', result);
+    alert('Registro completado!');
+  } catch (error) {
+    console.error('Error al registrar:', error);
+    alert(error.message);
+  }
+});
 function logoutUser() {
     localStorage.removeItem('authToken');
     localStorage.removeItem('userData');
