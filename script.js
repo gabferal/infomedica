@@ -1,5 +1,6 @@
 // Variables globales
 let currentUser = null;
+let isRequestInProgress = false;
 
 // Funciones de utilidad
 function showMessage(elementId, message, isError = true) {
@@ -21,74 +22,114 @@ function showMessage(elementId, message, isError = true) {
     }
 }
 
+function showLoading(elementId, show = true) {
+    const element = document.getElementById(elementId);
+    if (!element) return;
+    
+    if (show) {
+        element.innerHTML = '<div class="spinner"></div>';
+        element.style.display = 'block';
+    } else {
+        element.innerHTML = '';
+        element.style.display = 'none';
+    }
+}
+
+function toggleFormElements(formId, disabled) {
+    const form = document.getElementById(formId);
+    if (!form) return;
+    
+    const elements = form.querySelectorAll('button, input, textarea, select');
+    elements.forEach(el => {
+        el.disabled = disabled;
+    });
+}
+
+function validateEmail(email) {
+    const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return re.test(String(email).toLowerCase());
+}
+
+function validatePassword(password) {
+    return password.length >= 8;
+}
+
+// Manejo centralizado de solicitudes API
+async function handleApiRequest(url, options, errorMessage, maxRetries = 3) {
+    let retryCount = 0;
+    
+    while (retryCount < maxRetries) {
+        try {
+            const response = await fetch(url, options);
+            
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.message || errorMessage);
+            }
+            
+            return await response.json();
+        } catch (error) {
+            retryCount++;
+            if (retryCount >= maxRetries) {
+                console.error('API request failed:', error);
+                throw error;
+            }
+            
+            // Esperar antes de reintentar (con retraso exponencial)
+            await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, retryCount)));
+        }
+    }
+}
+
 // Funciones de autenticación
 async function loginUser(email, password) {
-    try {
-        const response = await fetch('/api/login', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ email, password })
-        });
-        
-        const data = await response.json();
-        
-        if (!response.ok) {
-            throw new Error(data.error || 'Error al iniciar sesión');
-        }
-        
-        localStorage.setItem('authToken', data.token);
-        localStorage.setItem('userData', JSON.stringify(data.student));
-        
-        return data.student;
-    } catch (error) {
-        console.error('Login error:', error);
-        throw error;
+    if (!validateEmail(email)) {
+        throw new Error('Por favor ingresa un email válido');
     }
+    
+    if (!validatePassword(password)) {
+        throw new Error('La contraseña debe tener al menos 8 caracteres');
+    }
+
+    return handleApiRequest(
+        '/api/login',
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                email: email.trim(),
+                password: password
+            })
+        },
+        'Error al iniciar sesión'
+    );
 }
 
 async function registerUser(userData) {
-  try {
-    const response = await fetch('http://localhost:3000/api/register', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(userData),
-    });
-
-    // Manejo mejorado de respuestas
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.message || 'Error en el registro');
+    if (!validateEmail(userData.email)) {
+        throw new Error('Por favor ingresa un email válido');
+    }
+    
+    if (!validatePassword(userData.password)) {
+        throw new Error('La contraseña debe tener al menos 8 caracteres');
     }
 
-    return await response.json();
-  } catch (error) {
-    console.error('Error en registerUser:', error);
-    throw error;
-  }
+    return handleApiRequest(
+        'http://localhost:3000/api/register',
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: userData.name.trim(),
+                email: userData.email.trim(),
+                password: userData.password,
+                studentId: userData.studentId.trim()
+            })
+        },
+        'Error en el registro'
+    );
 }
 
-// Uso en el formulario
-document.querySelector('form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  
-  const userData = {
-    email: e.target.email.value,
-    password: e.target.password.value
-  };
-
-  try {
-    const result = await registerUser(userData);
-    console.log('Registro exitoso:', result);
-    alert('Registro completado!');
-  } catch (error) {
-    console.error('Error al registrar:', error);
-    alert(error.message);
-  }
-});
 function logoutUser() {
     localStorage.removeItem('authToken');
     localStorage.removeItem('userData');
@@ -104,17 +145,15 @@ async function loadUserData() {
             return;
         }
         
-        const response = await fetch('/api/student', {
-            headers: {
-                'Authorization': `Bearer ${token}`
-            }
-        });
-        
-        const data = await response.json();
-        
-        if (!response.ok) {
-            throw new Error(data.error || 'Error al cargar datos');
-        }
+        const data = await handleApiRequest(
+            '/api/student',
+            {
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                }
+            },
+            'Error al cargar datos'
+        );
         
         currentUser = data;
         updateUI();
@@ -133,7 +172,7 @@ function updateUI() {
         el.textContent = `Hola, ${currentUser.name}`;
     });
     
-    // Actualizar lista de tareas (simplificado)
+    // Actualizar lista de tareas
     const taskList = document.getElementById('taskList');
     if (taskList) {
         taskList.innerHTML = currentUser.assignments.map(assignment => `
@@ -155,45 +194,82 @@ async function uploadAssignment(taskName, file) {
         }
         
         const formData = new FormData();
-        formData.append('name', taskName);
+        formData.append('name', taskName.trim());
         formData.append('assignment', file);
         
-        const response = await fetch('/api/upload', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${token}`
+        return handleApiRequest(
+            '/api/upload',
+            {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                },
+                body: formData
             },
-            body: formData
-        });
-        
-        const data = await response.json();
-        
-        if (!response.ok) {
-            throw new Error(data.error || 'Error al subir archivo');
-        }
-        
-        return data;
+            'Error al subir archivo'
+        );
     } catch (error) {
         console.error('Upload error:', error);
         throw error;
     }
 }
 
+// Validación en tiempo real
+function setupRealTimeValidation() {
+    // Validación de email
+    const emailInputs = document.querySelectorAll('input[type="email"]');
+    emailInputs.forEach(input => {
+        input.addEventListener('input', () => {
+            if (input.value && !validateEmail(input.value)) {
+                input.classList.add('invalid');
+            } else {
+                input.classList.remove('invalid');
+            }
+        });
+    });
+    
+    // Validación de contraseña
+    const passwordInputs = document.querySelectorAll('input[type="password"]');
+    passwordInputs.forEach(input => {
+        input.addEventListener('input', () => {
+            if (input.value && !validatePassword(input.value)) {
+                input.classList.add('invalid');
+            } else {
+                input.classList.remove('invalid');
+            }
+        });
+    });
+}
+
 // Event Listeners
 document.addEventListener('DOMContentLoaded', () => {
+    setupRealTimeValidation();
+    
     // Login Form
     const loginForm = document.getElementById('loginForm');
     if (loginForm) {
         loginForm.addEventListener('submit', async (e) => {
             e.preventDefault();
+            if (isRequestInProgress) return;
+            
+            isRequestInProgress = true;
+            toggleFormElements('loginForm', true);
+            showLoading('loginLoading');
+            
             const email = document.getElementById('email').value;
             const password = document.getElementById('password').value;
             
             try {
-                await loginUser(email, password);
+                const user = await loginUser(email, password);
+                localStorage.setItem('authToken', user.token);
+                localStorage.setItem('userData', JSON.stringify(user.student));
                 window.location.href = 'dashboard.html';
             } catch (error) {
                 showMessage('loginMessage', error.message);
+            } finally {
+                isRequestInProgress = false;
+                toggleFormElements('loginForm', false);
+                showLoading('loginLoading', false);
             }
         });
     }
@@ -203,19 +279,31 @@ document.addEventListener('DOMContentLoaded', () => {
     if (registerForm) {
         registerForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            const name = document.getElementById('name').value;
-            const email = document.getElementById('email').value;
-            const password = document.getElementById('password').value;
-            const studentId = document.getElementById('studentId').value;
+            if (isRequestInProgress) return;
+            
+            isRequestInProgress = true;
+            toggleFormElements('registerForm', true);
+            showLoading('registerLoading');
+            
+            const userData = {
+                name: document.getElementById('name').value,
+                email: document.getElementById('email').value,
+                password: document.getElementById('password').value,
+                studentId: document.getElementById('studentId').value
+            };
             
             try {
-                await registerUser(name, email, password, studentId);
+                await registerUser(userData);
                 showMessage('registerMessage', 'Registro exitoso! Redirigiendo...', false);
                 setTimeout(() => {
                     window.location.href = 'login.html';
                 }, 2000);
             } catch (error) {
                 showMessage('registerMessage', error.message);
+            } finally {
+                isRequestInProgress = false;
+                toggleFormElements('registerForm', false);
+                showLoading('registerLoading', false);
             }
         });
     }
@@ -239,11 +327,20 @@ document.addEventListener('DOMContentLoaded', () => {
         if (uploadForm) {
             uploadForm.addEventListener('submit', async (e) => {
                 e.preventDefault();
+                if (isRequestInProgress) return;
+                
+                isRequestInProgress = true;
+                toggleFormElements('uploadForm', true);
+                showLoading('uploadLoading');
+                
                 const taskName = document.getElementById('taskName').value;
                 const file = fileInput.files[0];
                 
                 if (!file) {
                     showMessage('uploadMessage', 'Por favor selecciona un archivo');
+                    isRequestInProgress = false;
+                    toggleFormElements('uploadForm', false);
+                    showLoading('uploadLoading', false);
                     return;
                 }
                 
@@ -255,6 +352,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     await loadUserData(); // Recargar datos
                 } catch (error) {
                     showMessage('uploadMessage', error.message);
+                } finally {
+                    isRequestInProgress = false;
+                    toggleFormElements('uploadForm', false);
+                    showLoading('uploadLoading', false);
                 }
             });
         }
@@ -290,3 +391,25 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 });
+
+// Estilos para validación en tiempo real
+const style = document.createElement('style');
+style.textContent = `
+    .invalid {
+        border-color: #FF3B30 !important;
+    }
+    .spinner {
+        border: 4px solid rgba(0, 0, 0, 0.1);
+        border-radius: 50%;
+        border-top: 4px solid #0071e3;
+        width: 24px;
+        height: 24px;
+        animation: spin 1s linear infinite;
+        margin: 0 auto;
+    }
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+`;
+document.head.appendChild(style);
